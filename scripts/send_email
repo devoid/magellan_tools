@@ -1,0 +1,100 @@
+#!/usr/bin/env python
+import argparse
+import os
+import re
+import string
+import subprocess
+import tempfile
+
+from email.MIMEMultipart import MIMEMultipart
+from email.MIMEBase import MIMEBase
+from email.MIMEText import MIMEText
+from email.Utils import COMMASPACE, formatdate
+from email import Encoders
+import smtplib
+
+
+def get_text_from_editor(template):
+    """Enter an editor to gather text. Strip out comment lines."""
+    def which(cmd):
+        return subprocess.check_output(
+            ' '.join(['which', cmd]), shell=True).rstrip()
+    editor = os.environ.get('EDITOR', which('vi'))
+    with tempfile.NamedTemporaryFile(delete=False) as fh:
+        fh.write(template)
+        filename = fh.name
+    os.system(" ".join([editor, filename]))
+    text = []
+    comment = re.compile("^#")
+    with open(filename, 'r') as fh:
+        for line in fh:
+            if not comment.match(line):
+                text.append(line)
+    os.unlink(filename)
+    return "\n".join(text)
+
+def send_mail(to=[], cc=[], bcc=[], subject=None, sender=None, message=None,
+              files=[], server="localhost"):
+    assert type(to)==list
+    assert type(cc)==list
+    assert type(bcc)==list
+    assert type(files)==list
+    assert len(to) + len(cc) + len(bcc) > 0
+    assert subject is not None
+    assert message is not None
+    assert sender is not None
+    msg = MIMEMultipart()
+    msg['From'] = sender
+    msg['To'] = COMMASPACE.join(to)
+    msg['Cc'] = COMMASPACE.join(cc)
+    msg['Bcc'] = COMMASPACE.join(bcc)
+    msg['Date'] = formatdate(localtime=True)
+    msg['Subject'] = subject
+    msg.attach( MIMEText(message) )
+    for f in files:
+        part = MIMEBase('application', "octet-stream")
+        part.set_payload( open(f,"rb").read() )
+        Encoders.encode_base64(part)
+        part.add_header(
+            'Content-Disposition',
+            'attachment; filename="%s"' % os.path.basename(f))
+        msg.attach(part)
+    smtp = smtplib.SMTP(server)
+    recipients = to + cc + bcc
+    smtp.sendmail(sender, recipients, msg.as_string())
+    smtp.close()
+
+def _make_template(**kwargs):
+    base = ", ".join(["${%s}" % k for k in kwargs.keys()])
+    return "#%s" % base
+        
+
+def notify(pairs, **kwargs):
+    template = kwargs['template']
+    del(kwargs['template'])
+    if not template:
+        template = get_text_from_editor(_make_template(**pairs))
+    template = string.Template(template)
+    message = template.substitute(**pairs)
+    send_mail(message=message, **kwargs)
+
+        
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--template', type=str, default=None)
+    parser.add_argument('-s', '--subject', type=str, required=True)
+    parser.add_argument('-f', '--from', type=str, dest='sender', default='magellan-support@mcs.anl.gov')
+    parser.add_argument('-e', '--email', dest='to', default=[],
+                        type=str, action='append')
+    parser.add_argument('-c', '--cc-email', dest='cc',
+                        default=[], type=str, action='append')
+    parser.add_argument('-b', '--bcc-email', dest='bcc',
+                        default=[], type=str, action='append') 
+    parser.add_argument('pairs', nargs='+', help='Key=Value pairs')
+    args = parser.parse_args()
+    args.pairs = dict([p.split('=') for p in args.pairs])
+    notify(**vars(args))
+    
+      
+if __name__ == '__main__':
+    main()
